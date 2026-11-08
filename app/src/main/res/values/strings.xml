@@ -1,1 +1,9 @@
+<resources>
 
+    <string name="app_name">Caption Bridge</string>
+
+    <string name="service_description">
+        Captures visible YouTube caption text and maintains a local five-line buffer.
+    </string>
+
+</resources>
