@@ -259,20 +259,22 @@ class ScreenCaptureService : Service() {
                 return
             }
 
-            crop = Bitmap.createBitmap(
-                fullBitmap,
-                left,
-                top,
-                right - left,
-                bottom - top
-            )
+            val cropBitmap = Bitmap.createBitmap(
+    fullBitmap,
+    left,
+    top,
+    right - left,
+    bottom - top
+)
 
-            fullBitmap.recycle()
+crop = cropBitmap
 
-            val input = InputImage.fromBitmap(
-                crop,
-                0
-            )
+fullBitmap.recycle()
+
+val input = InputImage.fromBitmap(
+    cropBitmap,
+    0
+)
 
             recognizer.process(input)
                 .addOnSuccessListener { result ->
