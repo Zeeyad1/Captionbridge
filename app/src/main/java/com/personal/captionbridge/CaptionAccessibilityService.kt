@@ -14,42 +14,45 @@ import android.graphics.drawable.GradientDrawable
 import android.view.Gravity
 import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
-import android.view.accessibility.AccessibilityNodeInfo
 import android.widget.TextView
 import android.widget.Toast
-import java.util.ArrayDeque
 
 class CaptionAccessibilityService : AccessibilityService() {
 
-    // Maximum number of stored lines.
-    private val recent = ArrayDeque<String>(5)
-
     private var windowManager: WindowManager? = null
-
     private var floatingButton: TextView? = null
-
     private var settings: SharedPreferences? = null
+
+    private var failedFullscreenChecks = 0
 
     private val preferenceListener =
         SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
 
             if (key == "enabled") {
+
                 val enabled =
                     settings?.getBoolean("enabled", false) ?: false
 
                 if (!enabled) {
+                    setFullscreenState(false)
                     hideButton()
+                    CaptionBuffer.clear(this)
                 }
             }
         }
 
     override fun onServiceConnected() {
+
         super.onServiceConnected()
 
         windowManager =
-            getSystemService(Context.WINDOW_SERVICE) as WindowManager
+            getSystemService(Context.WINDOW_SERVICE)
+                as WindowManager
 
-        settings = getSharedPreferences("settings", MODE_PRIVATE)
+        settings = getSharedPreferences(
+            "settings",
+            MODE_PRIVATE
+        )
 
         settings?.registerOnSharedPreferenceChangeListener(
             preferenceListener
@@ -64,157 +67,67 @@ class CaptionAccessibilityService : AccessibilityService() {
             settings?.getBoolean("enabled", false) ?: false
 
         if (!enabled) {
+            setFullscreenState(false)
             hideButton()
             return
         }
 
-        val packageName = event.packageName?.toString() ?: ""
+        val packageName = event.packageName?.toString().orEmpty()
 
-        // Only operate while YouTube is the active app.
+        if (packageName.isEmpty()) return
+
         if (packageName != "com.google.android.youtube") {
-            if (packageName.isNotEmpty()) {
-                hideButton()
-            }
-            return
-        }
 
-        val root = rootInActiveWindow
+            failedFullscreenChecks = 0
 
-        if (root == null) {
+            setFullscreenState(false)
             hideButton()
+
             return
         }
 
-        val screenBounds = Rect()
+        val root = rootInActiveWindow ?: return
 
-        root.getBoundsInScreen(screenBounds)
+        val bounds = Rect()
+
+        root.getBoundsInScreen(bounds)
 
         val metrics = resources.displayMetrics
 
         val screenWidth = metrics.widthPixels
         val screenHeight = metrics.heightPixels
 
-        /*
-         * Fullscreen heuristic:
-         * The active YouTube window must occupy most
-         * of the available display in both dimensions.
-         *
-         * This is not a guaranteed fullscreen detector.
-         */
-
+        // Fullscreen detection is independent of caption recognition.
         val fullscreen =
-            screenBounds.width() >= screenWidth * 0.88f &&
-            screenBounds.height() >= screenHeight * 0.82f
+            screenWidth > screenHeight &&
+            bounds.width() >= screenWidth * 0.88f &&
+            bounds.height() >= screenHeight * 0.82f
 
         if (fullscreen) {
 
-            scanCaptionNodes(root, screenHeight)
+            failedFullscreenChecks = 0
 
+            setFullscreenState(true)
             showButton()
 
         } else {
 
-            hideButton()
-        }
-    }
+            failedFullscreenChecks++
 
-    private fun scanCaptionNodes(
-        root: AccessibilityNodeInfo,
-        screenHeight: Int
-    ) {
+            // Allow transient accessibility-bound changes.
+            if (failedFullscreenChecks >= 3) {
 
-        val found = mutableListOf<Pair<Int, String>>()
-
-        fun walk(node: AccessibilityNodeInfo?) {
-
-            if (node == null) return
-
-            val text = node.text?.toString()?.trim().orEmpty()
-
-            if (
-                text.isNotBlank() &&
-                text.length in 2..180 &&
-                node.isVisibleToUser &&
-                !node.isClickable &&
-                !node.isFocusable
-            ) {
-
-                val bounds = Rect()
-
-                node.getBoundsInScreen(bounds)
-
-                // Only inspect the lower portion of the screen.
-                if (
-                    bounds.centerY() > screenHeight * 0.45f &&
-                    bounds.width() > 20 &&
-                    bounds.height() > 5
-                ) {
-
-                    val cleaned = text.replace(
-                        Regex("\\s+"),
-                        " "
-                    )
-
-                    if (!looksLikeControlLabel(cleaned)) {
-
-                        found.add(
-                            Pair(bounds.centerY(), cleaned)
-                        )
-                    }
-                }
-            }
-
-            for (i in 0 until node.childCount) {
-                walk(node.getChild(i))
+                setFullscreenState(false)
+                hideButton()
             }
         }
-
-        walk(root)
-
-        // Sort text from top to bottom.
-        val ordered = found
-            .sortedBy { it.first }
-            .map { it.second }
-            .distinct()
-
-        for (line in ordered) {
-            appendLine(line)
-        }
     }
 
-    private fun looksLikeControlLabel(text: String): Boolean {
+    private fun setFullscreenState(fullscreen: Boolean) {
 
-        val lower = text.lowercase()
-
-        val controls = listOf(
-            "play",
-            "pause",
-            "settings",
-            "subtitles",
-            "captions",
-            "skip ads",
-            "more options",
-            "seek",
-            "volume",
-            "youtube"
-        )
-
-        return controls.any {
-            lower == it || lower.startsWith("$it ")
-        }
-    }
-
-    private fun appendLine(line: String) {
-
-        // Avoid adding the same currently buffered line again.
-        if (recent.contains(line)) return
-
-        recent.addLast(line)
-
-        // Maintain exactly five or fewer lines.
-        while (recent.size > 5) {
-            recent.removeFirst()
-        }
+        settings?.edit()
+            ?.putBoolean("youtube_fullscreen", fullscreen)
+            ?.apply()
     }
 
     private fun showButton() {
@@ -224,7 +137,6 @@ class CaptionAccessibilityService : AccessibilityService() {
         val button = TextView(this).apply {
 
             text = "CB"
-
             textSize = 15f
 
             setTextColor(Color.WHITE)
@@ -233,16 +145,11 @@ class CaptionAccessibilityService : AccessibilityService() {
 
             gravity = Gravity.CENTER
 
-            val backgroundShape = GradientDrawable().apply {
-
+            background = GradientDrawable().apply {
                 shape = GradientDrawable.OVAL
-
                 setColor(Color.rgb(30, 105, 220))
-
                 setStroke(2, Color.WHITE)
             }
-
-            background = backgroundShape
 
             contentDescription =
                 "Send recent captions to ChatGPT"
@@ -255,7 +162,6 @@ class CaptionAccessibilityService : AccessibilityService() {
         val params = WindowManager.LayoutParams(
 
             dp(54),
-
             dp(54),
 
             WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
@@ -270,7 +176,6 @@ class CaptionAccessibilityService : AccessibilityService() {
             gravity = Gravity.RIGHT or Gravity.CENTER_VERTICAL
 
             x = dp(14)
-
             y = 0
         }
 
@@ -291,11 +196,9 @@ class CaptionAccessibilityService : AccessibilityService() {
         floatingButton?.let {
 
             try {
-
                 windowManager?.removeView(it)
-
             } catch (_: Exception) {
-                // View may already have been removed.
+                // Already removed.
             }
         }
 
@@ -304,7 +207,7 @@ class CaptionAccessibilityService : AccessibilityService() {
 
     private fun sendToChatGPT() {
 
-        val text = recent.toList().joinToString("\n")
+        val text = CaptionBuffer.read(this)
 
         if (text.isBlank()) {
 
@@ -317,7 +220,6 @@ class CaptionAccessibilityService : AccessibilityService() {
             return
         }
 
-        // Copy captured captions.
         val clipboard =
             getSystemService(Context.CLIPBOARD_SERVICE)
                 as ClipboardManager
@@ -329,7 +231,6 @@ class CaptionAccessibilityService : AccessibilityService() {
             )
         )
 
-        // Open the installed ChatGPT application.
         val launchIntent =
             packageManager.getLaunchIntentForPackage(
                 "com.openai.chatgpt"
@@ -395,11 +296,13 @@ class CaptionAccessibilityService : AccessibilityService() {
 
     override fun onInterrupt() {
 
+        setFullscreenState(false)
         hideButton()
     }
 
     override fun onDestroy() {
 
+        setFullscreenState(false)
         hideButton()
 
         settings?.unregisterOnSharedPreferenceChangeListener(
